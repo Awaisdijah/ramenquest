@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Ramen Quest for Khadijah</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <style>
+    body { margin: 0; padding: 0; background-color: #90EE90; display: flex; justify-content: center; align-items: center; height: 100vh; }
+    canvas { border: 2px solid #FFD700; max-width: 100%; max-height: 100%; touch-action: none; }
+    #ending { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; font-family: Arial; color: #FFD700; background: rgba(0, 0, 0, 0.7); padding: 20px; border-radius: 10px; display: none; }
+  </style>
+</head>
+<body>
+  <canvas id="gameCanvas"></canvas>
+  <div id="ending"></div>
+  <audio id="bgMusic" loop preload="auto">
+    <source src="https://cdn.pixabay.com/audio/2023/01/12/09-33-08-805_6c2f.mp3" type="audio/mp3">
+  </audio>
+  <script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const endingDiv = document.getElementById('ending');
+    const bgMusic = document.getElementById('bgMusic');
+
+    // Game state
+    let gameState = 'instructions';
+    let awais = { x: 50, y: 0, speed: 3, vy: 0, jumping: false, alive: true, ramen: 0, level: 1, lastJump: 0, sitting: false, onHorse: false };
+    let khadijah = { x: 0, y: 0, speed: 2 };
+    let mrTayyub = { x: 0, y: 0, active: true, lastOrb: 0 };
+    let missAminah = { x: 0, y: 0, active: false, lastBottle: 0 };
+    let orbs = [];
+    let bottles = [];
+    let platforms = [{ x: 0, y: 0, width: 0, height: 20 }];
+    let ramen = [];
+    let gravity = 0.8;
+    let dialogue = "";
+    let scrollSpeed = 2;
+    let orbSpeed = 2.0;
+    let bottleSpeed = 2;
+    let gameEnded = false;
+    let khadijahMoving = false;
+    let inDialoguePhase = false;
+    let dialogueIndex = 0;
+    let dialogueQueue = [];
+    let startOrb = { x: 0, y: 0, vx: -2 };
+    let showMissAminahPopup = false;
+    let musicStarted = false;
+    let isMovingLeft = false;
+    let isMovingRight = false;
+    let isSitting = false;
+    let lastSpacePress = 0;
+
+    // Buttons
+    const buttons = [
+      { x: 10, y: 0, width: 70, height: 70, label: '←', action: 'left' },
+      { x: 90, y: 0, width: 70, height: 70, label: '→', action: 'right' },
+      { x: 0, y: 0, width: 70, height: 70, label: '↑', action: 'jump' },
+      { x: 0, y: 0, width: 70, height: 70, label: '↓', action: 'sit' },
+      { x: 0, y: 60, width: 70, height: 70, label: 'OK', action: 'dialogue' },
+      { x: 0, y: 0, width: 140, height: 70, label: 'Start', action: 'start' }
+    ];
+
+    // Resize canvas
+    function resizeCanvas() {
+      try {
+        canvas.width = Math.min(window.innerWidth * 0.95, 414);
+        canvas.height = Math.min(window.innerHeight * 0.8, 600);
+        const platformY = canvas.height / 2;
+        platforms[0].y = platformY;
+        platforms[0].width = canvas.width * 5;
+        if (!awais.jumping && !awais.sitting) awais.y = platformY - 30;
+        else if (awais.sitting) awais.y = platformY - 10;
+        khadijah.y = platformY - 30;
+        khadijah.x = canvas.width * 0.7;
+        mrTayyub.y = platformY - 30;
+        mrTayyub.x = canvas.width * 2.0;
+        missAminah.y = platformY - 30;
+        missAminah.x = canvas.width * 3.0;
+        ramen = [
+          { x: 200, y: platformY - 10 },
+          { x: 500, y: platformY - 10 },
+          { x: 800, y: platformY - 10 }
+        ];
+        startOrb.y = platformY - 30;
+        startOrb.x = canvas.width / 2;
+        buttons.forEach(button => {
+          if (button.action === 'left') button.y = canvas.height - 80;
+          else if (button.action === 'right') button.y = canvas.height - 80;
+          else if (button.action === 'jump') {
+            button.x = canvas.width - 160;
+            button.y = canvas.height - 80;
+          } else if (button.action === 'sit') {
+            button.x = canvas.width - 80;
+            button.y = canvas.height - 80;
+          } else if (button.action === 'start') {
+            button.x = canvas.width / 2 - 70;
+            button.y = canvas.height - 120;
+          } else if (button.action === 'dialogue') {
+            button.x = canvas.width - 80;
+          }
+        });
+        console.log('Resize: Canvas:', canvas.width, canvas.height, 'Awais y:', awais.y, 'Platform y:', platformY);
+      } catch (e) {
+        console.error('Resize error:', e);
+      }
+    }
+
+    // Debounce resize
+    let resizeTimeout;
+    window.addEventListener('resize', () => {
+      clearTimeout(resizeTimeout);
+      resizeTimeout = setTimeout(resizeCanvas, 100);
+    });
+    resizeCanvas();
+
+    // Start music
+    function startMusic() {
+      if (!musicStarted) {
+        try {
+          bgMusic.volume = 0.3;
+          bgMusic.play().then(() => {
+            musicStarted = true;
+            console.log('Music started');
+          }).catch(e => console.log('Music failed:', e));
+        } catch (e) {
+          console.log('Music error:', e);
+        }
+      }
+    }
+
+    // Wrap text
+    function wrapText(text, maxWidth) {
+      try {
+        const words = text.split(' ');
+        let lines = [];
+        let currentLine = words[0] || '';
+        ctx.font = '16px Arial';
+        for (let i = 1; i < words.length; i++) {
+          const testLine = currentLine + ' ' + words[i];
+          const metrics = ctx.measureText(testLine);
+          if (metrics.width > maxWidth) {
+            lines.push(currentLine);
+            currentLine = words[i];
+          } else {
+            currentLine = testLine;
+          }
+        }
+        lines.push(currentLine);
+        console.log('Text lines:', lines);
+        return lines;
+      } catch (e) {
+        console.error('WrapText error:', e);
+        return [text];
+      }
+    }
+
+    // Touch events
+    canvas.addEventListener('touchstart', (e) => {
+      try {
+        if (e.preventDefault) e.preventDefault();
+        startMusic();
+        const touches = e.changedTouches;
+        for (let touch of touches) {
+          const x = touch.clientX - canvas.getBoundingClientRect().left;
+          const y = touch.clientY - canvas.getBoundingClientRect().top;
+          buttons.forEach(button => {
+            if (x >= button.x && x <= button.x + button.width && y >= button.y && y <= button.y + button.height) {
+              if ((gameState === 'instructions' || gameState === 'start') && button.action === 'start') {
+                gameState = gameState === 'instructions' ? 'start' : 'playing';
+              }
+              if (gameState !== 'playing') return;
+              if (button.action === 'left') isMovingLeft = true;
+              if (button.action === 'right') isMovingRight = true;
+              if (button.action === 'jump' && !awais.jumping && Date.now() - awais.lastJump > 500) {
+                awais.vy = -8;
+                awais.jumping = true;
+                awais.lastJump = Date.now();
+                if (isMovingRight) {
+                  awais.vy = -16;
+                  awais.x += 50;
+                } else if (isMovingLeft) {
+                  awais.vy = -16;
+                  awais.x -= 50;
+                }
+              }
+              if (button.action === 'sit' && !awais.jumping && platforms[0]) {
+                isSitting = true;
+                awais.sitting = true;
+                awais.y = platforms[0].y - 10;
+                awais.vy = 0;
+              }
+              if (button.action === 'dialogue' && (inDialoguePhase || showMissAminahPopup) && Date.now() - lastSpacePress > 200) {
+                lastSpacePress = Date.now();
+                if (showMissAminahPopup) {
+                  showMissAminahPopup = false;
+                  awais.level = 3;
+                  awais.ramen = 0;
+                  awais.onHorse = true;
+                  resizeCanvas();
+                  awais.x = canvas.width * 0.2;
+                  if (platforms[0]) {
+                    awais.y = platforms[0].y - 30;
+                    awais.vy = 0;
+                    awais.jumping = false;
+                  }
+                  console.log('Level 3 transition: Awais y:', awais.y, 'vy:', awais.vy, 'jumping:', awais.jumping, 'Platform y:', platforms[0]?.y);
+                  dialogue = "Awais: Dodged her bottles like a ninja! To Khadijah on horseback!";
+                } else if (dialogueIndex < dialogueQueue.length) {
+                  dialogueIndex++;
+                }
+              }
+            }
+          });
+        }
+      } catch (e) {
+        console.error('Touchstart error:', e);
+      }
+    });
+
+    canvas.addEventListener('touchend', (e) => {
+      try {
+        if (e.preventDefault) e.preventDefault();
+        const touches = e.changedTouches;
+        for (let touch of touches) {
+          const x = touch.clientX - canvas.getBoundingClientRect().left;
+          const y = touch.clientY - canvas.getBoundingClientRect().top;
+          buttons.forEach(button => {
+            if (x >= button.x && x <= button.x + button.width && y >= button.y && y <= button.y + button.height) {
+              if (button.action === 'left') isMovingLeft = false;
+              if (button.action === 'right') isMovingRight = false;
+              if (button.action === 'sit' && isSitting && platforms[0]) {
+                isSitting = false;
+                awais.sitting = false;
+                awais.y = platforms[0].y - 30;
+                awais.vy = 0;
+              }
+            }
+          });
+        }
+      } catch (e) {
+        console.error('Touchend error:', e);
+      }
+    });
+
+    // Keyboard controls
+    document.addEventListener('keydown', (e) => {
+      try {
+        startMusic();
+        const now = Date.now();
+        if ((gameState === 'instructions' && e.key === 'Enter') || (gameState === 'start' && e.key === 'Enter')) {
+          gameState = gameState === 'instructions' ? 'start' : 'playing';
+          return;
+        }
+        if (e.key === ' ' && (inDialoguePhase || showMissAminahPopup) && now - lastSpacePress > 200) {
+          lastSpacePress = now;
+          if (showMissAminahPopup) {
+            showMissAminahPopup = false;
+            awais.level = 3;
+            awais.ramen = 0;
+            awais.onHorse = true;
+            resizeCanvas();
+            awais.x = canvas.width * 0.2;
+            if (platforms[0]) {
+              awais.y = platforms[0].y - 30;
+              awais.vy = 0;
+              awais.jumping = false;
+            }
+            console.log('Level 3 transition: Awais y:', awais.y, 'vy:', awais.vy, 'jumping:', awais.jumping, 'Platform y:', platforms[0]?.y);
+            dialogue = "Awais: Dodged her bottles like a ninja! To Khadijah on horseback!";
+          } else if (dialogueIndex < dialogueQueue.length) {
+            dialogueIndex++;
+          }
+          return;
+        }
+        if (!awais.alive || gameEnded || inDialoguePhase || showMissAminahPopup || gameState !== 'playing') return;
+        if (e.key === 'ArrowRight') isMovingRight = true;
+        if (e.key === 'ArrowLeft') isMovingLeft = true;
+        if (e.key === 'ArrowDown' && !awais.jumping && platforms[0]) {
+          isSitting = true;
+          awais.sitting = true;
+          awais.y = platforms[0].y - 10;
+          awais.vy = 0;
+        }
+        if (e.key === 'ArrowUp' && !awais.jumping && now - awais.lastJump > 500) {
+          awais.vy = -8;
+          awais.jumping = true;
+          awais.lastJump = now;
+          if (isMovingRight) {
+            awais.vy = -16;
+            awais.x += 50;
+          } else if (isMovingLeft) {
+            awais.vy = -16;
+            awais.x -= 50;
+          }
+        }
+      } catch (e) {
+        console.error('Keydown error:', e);
+      }
+    });
+
+    document.addEventListener('keyup', (e) => {
+      try {
+        if (e.key === 'ArrowRight') isMovingRight = false;
+        if (e.key === 'ArrowLeft') isMovingLeft = false;
+        if (e.key === 'ArrowDown' && isSitting && platforms[0]) {
+          isSitting = false;
+          awais.sitting = false;
+          awais.y = platforms[0].y - 30;
+          awais.vy = 0;
+        }
+      } catch (e) {
+        console.error('Keyup error:', e);
+      }
+    });
+
+    function drawBackground() {
+      ctx.fillStyle = '#90EE90';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      if (platforms[0]) {
+        ctx.fillStyle = '#8B4513';
+        ctx.fillRect(0, platforms[0].y, canvas.width * 5, 20);
+      }
+    }
+
+    function drawAwais() {
+      if (awais.alive) {
+        ctx.fillStyle = '#C0C0C0';
+        ctx.fillRect(awais.x, awais.y, 20, 30 - (awais.sitting ? 10 : 0));
+        ctx.fillStyle = 'black';
+        ctx.fillRect(awais.x + 5, awais.y - 5, 10, 5);
+        ctx.fillStyle = 'red';
+        ctx.fillRect(awais.x + 10, awais.y - 15, 5, 15);
+        ctx.fillStyle = '#D3D3D3';
+        ctx.fillRect(awais.x + 5, awais.y + 10, 10, 10);
+        if (awais.onHorse) {
+          ctx.fillStyle = '#A52A2A';
+          ctx.fillRect(awais.x - 10, awais.y + 20, 40, 20);
+          ctx.fillRect(awais.x + 30, awais.y + 10, 10, 10);
+        }
+        ctx.font = '12px Arial';
+        ctx.fillStyle = 'black';
+        ctx.strokeStyle = 'white';
+        ctx.lineWidth = 2;
+        ctx.strokeText('Prince Awais', awais.x, awais.y - 10);
+        ctx.fillText('Prince Awais', awais.x, awais.y - 10);
+      }
+    }
+
+    function drawKhadijah() {
+      if (khadijah.x >= 0 && khadijah.x <= canvas.width) {
+        ctx.fillStyle = '#D2691E';
+        ctx.fillRect(khadijah.x, khadijah.y, 20, 30);
+        ctx.fillStyle = 'pink';
+        ctx.fillRect(khadijah.x, khadijah.y + 5, 20, 25);
+        ctx.fillStyle = '#8B4513';
+        ctx.fillRect(khadijah.x + 5, khadijah.y - 5, 10, 10);
+        ctx.fillStyle = 'gold';
+        ctx.fillRect(khadijah.x + 7, khadijah.y - 7, 6, 2);
+        ctx.font = '12px Arial';
+        ctx.fillStyle = 'black';
+        ctx.strokeStyle = 'white';
+        ctx.lineWidth = 2;
+        ctx.strokeText('Princess Khadijah', khadijah.x, khadijah.y - 10);
+        ctx.fillText('Princess Khadijah', khadijah.x, khadijah.y - 10);
+      }
+    }
+
+    function drawMrTayyub(x, y) {
+      ctx.fillStyle = '#F0E68C';
+      ctx.fillRect(x, y, 20, 30);
+      ctx.fillStyle = 'black';
+      ctx.fillRect(x + 5, y - 5, 10, 5);
+      ctx.fillStyle = '#87CEEB';
+      ctx.fillRect(x + 2, y + 10, 16, 10);
+      ctx.fillStyle = '#8B0000';
+      ctx.fillRect(x + 7, y + 20, 6, 10);
+      ctx.font = '12px Arial';
+      ctx.fillStyle = 'black';
+      ctx.strokeStyle = 'white';
+      ctx.lineWidth = 2;
+      ctx.strokeText('Mr. Tayyub', x, y - 10);
+      ctx.fillText('Mr. Tayyub', x, y - 10);
+    }
+
+    function drawMissAminah() {
+      ctx.fillStyle = '#00008B';
+      ctx.fillRect(missAminah.x, missAminah.y, 20, 30);
+      ctx.fillStyle = '#8B4513';
+      ctx.fillRect(missAminah.x + 5, missAminah.y - 5, 10, 10);
+      ctx.fillStyle = 'orange';
+      ctx.fillRect(missAminah.x + 15, missAminah.y + 5, 5, 10);
+      ctx.font = '12px Arial';
+      ctx.fillStyle = 'black';
+      ctx.strokeStyle = 'white';
+      ctx.lineWidth = 2;
+      ctx.strokeText('Miss Aminah', missAminah.x, missAminah.y - 10);
+      ctx.fillText('Miss Aminah', missAminah.x, missAminah.y - 10);
+    }
+
+    function drawOrbs() {
+      ctx.fillStyle = 'purple';
+      orbs.forEach(o => ctx.fillRect(o.x, o.y, 10, 10));
+    }
+
+    function drawBottles() {
+      ctx.fillStyle = 'brown';
+      bottles.forEach(b => ctx.fillRect(b.x, b.y, 10, 20));
+    }
+
+    function drawRamen() {
+      ctx.fillStyle = '#FFA500';
+      ramen.forEach(r => {
+        ctx.beginPath();
+        ctx.moveTo(r.x, r.y);
+        ctx.quadraticCurveTo(r.x + 20, r.y - 20, r.x + 40, r.y);
+        ctx.quadraticCurveTo(r.x + 20, r.y + 20, r.x, r.y);
+        ctx.fill();
+        ctx.fillStyle = 'white';
+        ctx.fillRect(r.x + 10, r.y - 10, 20, 5);
+      });
+    }
+
+    function drawPlatforms() {
+      platforms.forEach(p => {
+        ctx.fillStyle = '#8B4513';
+        ctx.fillRect(p.x, p.y, p.width, p.height);
+      });
+    }
+
+    function drawDialogue() {
+      if (gameState === 'start') {
+        ctx.fillStyle = '#FFFF00';
+        ctx.fillRect(10, 10, canvas.width - 20, 80);
+        ctx.fillStyle = 'black';
+        ctx.font = '16px Arial';
+        const lines = wrapText('Mr. Tayyub: hahahhaahh you think you can escape from me and give my daughter this ramen !!! neverrrrrr ahahahaah, escape my orbs', canvas.width - 40);
+        lines.forEach((line, i) => ctx.fillText(line, 15, 30 + i * 20));
+      } else if (showMissAminahPopup) {
+        ctx.fillStyle = '#FFFF00';
+        ctx.fillRect(10, 10, canvas.width - 20, 100);
+        ctx.fillStyle = 'black';
+        ctx.font = '16px Arial';
+        const lines = wrapText('Miss Aminah: Don’t you dare come near my daughter i will put weed i got from rachael in your eyes and break unlimited bottles of Jack daniels on your head', canvas.width - 40);
+        lines.forEach((line, i) => ctx.fillText(line, 15, 30 + i * 20));
+      } else {
+        ctx.fillStyle = '#FFFF00';
+        ctx.fillRect(10, 10, canvas.width - 20, 50);
+        ctx.fillStyle = 'black';
+        ctx.font = '16px Arial';
+        const lines = wrapText(dialogue, canvas.width - 40);
+        lines.forEach((line, i) => ctx.fillText(line, 15, 30 + i * 20));
+      }
+      buttons.forEach(button => {
+        if (gameState === 'playing' && button.action === 'start') return;
+        if ((gameState === 'start' || gameState === 'instructions') && button.action !== 'start') return;
+        if (button.action === 'dialogue' && !inDialoguePhase && !showMissAminahPopup) return;
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+        ctx.fillRect(button.x, button.y, button.width, button.height);
+        ctx.fillStyle = 'black';
+        ctx.font = '24px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText(button.label, button.x + button.width / 2, button.y + button.height / 2 + 8);
+      });
+      ctx.textAlign = 'left';
+    }
+
+    function drawInstructions() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#90EE90';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#FFFF00';
+      ctx.fillRect(10, 10, canvas.width - 20, canvas.height - 100);
+      ctx.fillStyle = 'black';
+      ctx.font = '18px Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText('Ramen Quest for Khadijah', canvas.width / 2, 50);
+      ctx.fillText('Controls:', canvas.width / 2, 90);
+      ctx.fillText('← / → : Move Left / Right', canvas.width / 2, 130);
+      ctx.fillText('↑ : Jump (Hold with ←/→ for big jump)', canvas.width / 2, 160);
+      ctx.fillText('↓ : Sit (Dodge orbs/bottles)', canvas.width / 2, 190);
+      ctx.fillText('OK : Advance Dialogues', canvas.width / 2, 220);
+      ctx.fillText('Start : Begin Game', canvas.width / 2, 250);
+      ctx.fillText('Goal: Collect ramen, reach Princess Khadijah!', canvas.width / 2, 290);
+      ctx.textAlign = 'left';
+      buttons.forEach(button => {
+        if (button.action !== 'start') return;
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+        ctx.fillRect(button.x, button.y, button.width, button.height);
+        ctx.fillStyle = 'black';
+        ctx.font = '24px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText(button.label, button.x + button.width / 2, button.y + button.height / 2 + 8);
+      });
+      ctx.textAlign = 'left';
+    }
+
+    function drawStartScreen() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#90EE90';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      if (platforms[0]) {
+        drawMrTayyub(canvas.width / 2 - 10, platforms[0].y - 30);
+        ctx.fillStyle = 'purple';
+        ctx.fillRect(startOrb.x, startOrb.y, 10, 10);
+        startOrb.x += startOrb.vx;
+        if (startOrb.x < 0) startOrb.x = canvas.width / 2;
+      }
+      drawDialogue();
+    }
+
+    function update() {
+      try {
+        if (gameState === 'instructions') {
+          drawInstructions();
+          requestAnimationFrame(update);
+          return;
+        }
+        if (gameState === 'start') {
+          drawStartScreen();
+          requestAnimationFrame(update);
+          return;
+        }
+        if (gameEnded) {
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          drawBackground();
+          drawKhadijah();
+          drawAwais();
+          drawDialogue();
+          return;
+        }
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        drawBackground();
+        drawPlatforms();
+        drawAwais();
+        if (awais.level === 1 && mrTayyub.active) drawMrTayyub(mrTayyub.x, mrTayyub.y);
+        if (awais.level === 2 && missAminah.active) drawMissAminah();
+        drawRamen();
+        drawOrbs();
+        drawBottles();
+        if (awais.level === 3) {
+          console.log('Khadijah at:', khadijah.x, khadijah.y, 'Awais at y:', awais.y, 'vy:', awais.vy, 'jumping:', awais.jumping, 'Platform y:', platforms[0]?.y);
+          drawKhadijah();
+        }
+        drawDialogue();
+
+        // Snap to Khadijah in Level 3
+        if (awais.level === 3 && !inDialoguePhase && !khadijahMoving && khadijah.x !== canvas.width * 0.7 && platforms[0]) {
+          platforms[0].x = 0;
+          khadijah.x = canvas.width * 0.7;
+          awais.x = canvas.width * 0.2;
+          awais.y = platforms[0].y - 30;
+          awais.vy = 0;
+          awais.jumping = false;
+        }
+
+        // Handle movement
+        if (!inDialoguePhase && !showMissAminahPopup && awais.alive) {
+          if (isMovingRight) awais.x += awais.speed * (awais.onHorse ? 2 : 1);
+          if (isMovingLeft) awais.x -= awais.speed * (awais.onHorse ? 2 : 1);
+        }
+
+        // Physics
+        if (awais.jumping && platforms[0]) {
+          awais.vy = Math.max(Math.min(awais.vy + gravity, 10), -16);
+          awais.y += awais.vy;
+          if (awais.y + 30 >= platforms[0].y && awais.x + 20 > platforms[0].x && awais.x < platforms[0].x + platforms[0].width && awais.vy >= 0) {
+            awais.y = platforms[0].y - 30;
+            awais.vy = 0;
+            awais.jumping = false;
+          }
+        } else if (!awais.sitting && platforms[0] && awais.x + 20 > platforms[0].x && awais.x < platforms[0].x + platforms[0].width) {
+          awais.y = platforms[0].y - 30;
+          awais.vy = 0;
+        }
+
+        // Scroll
+        if (awais.x > canvas.width / 2 && awais.alive && !inDialoguePhase && !showMissAminahPopup && awais.level !== 3) {
+          platforms.forEach(p => p.x -= scrollSpeed);
+          ramen.forEach(r => r.x -= scrollSpeed);
+          if (awais.level === 1 && mrTayyub.active) mrTayyub.x -= scrollSpeed;
+          if (awais.level === 2 && missAminah.active) missAminah.x -= scrollSpeed;
+          orbs.forEach(o => o.x -= scrollSpeed);
+          bottles.forEach(b => b.x -= bottleSpeed);
+        }
+
+        // Orb mechanics
+        const now = Date.now();
+        if (awais.level === 1 && mrTayyub.active && now - mrTayyub.lastOrb > 7000) {
+          orbs.push({ x: mrTayyub.x, y: awais.y - 5 });
+          mrTayyub.lastOrb = now;
+        }
+        orbs.forEach(o => o.x -= orbSpeed);
+        orbs = orbs.filter(o => o.x > 0);
+        orbs.forEach(o => {
+          if (awais.x < o.x + 10 && awais.x + 20 > o.x && awais.y < o.y + 10 && awais.y + 30 > o.y && !awais.sitting && awais.alive) {
+            awais.alive = false;
+            dialogue = "Mr. Tayyub: Ha! My orb turned you into a pancake!";
+          }
+        });
+
+        // Bottle mechanics
+        if (awais.level === 2 && missAminah.active && now - missAminah.lastBottle > 7000) {
+          bottles.push({ x: missAminah.x, y: missAminah.y + 10 });
+          missAminah.lastBottle = now;
+        }
+        bottles.forEach(b => b.x -= bottleSpeed);
+        bottles = bottles.filter(b => b.x > 0);
+        bottles.forEach(b => {
+          if (awais.x < b.x + 10 && awais.x + 20 > b.x && awais.y < b.y + 20 && awais.y + 30 > b.y && awais.alive) {
+            awais.alive = false;
+            dialogue = "Miss Aminah: I will squash your head with my Jack Daniels bottles!";
+          }
+        });
+
+        // Ramen collection
+        ramen.forEach((r, i) => {
+          if (awais.x < r.x + 40 && awais.x + 20 > r.x && awais.y < r.y + 20 && awais.y + 30 > r.y && awais.alive) {
+            ramen.splice(i, 1);
+            awais.ramen += 1;
+            if (awais.ramen === 3 && awais.level === 1) {
+              awais.level = 2;
+              awais.ramen = 0;
+              missAminah.active = true;
+              mrTayyub.active = false;
+              if (platforms[0]) {
+                ramen = [
+                  { x: 1000, y: platforms[0].y - 10 },
+                  { x: 1400, y: platforms[0].y - 10 },
+                  { x: 1800, y: platforms[0].y - 10 }
+                ];
+              }
+              dialogue = "Awais: Take that, Mr. T! Time to tango with Miss A!";
+            } else if (awais.ramen === 3 && awais.level === 2 && !showMissAminahPopup) {
+              showMissAminahPopup = true;
+            }
+          }
+        });
+
+        // Level 3: Khadijah
+        if (awais.level === 3 && Math.hypot(awais.x - khadijah.x, awais.y - khadijah.y) < 200 && !inDialoguePhase && !khadijahMoving && awais.alive && !gameEnded) {
+          khadijahMoving = true;
+          const halfwayX = canvas.width * 0.7;
+          dialogueQueue = [
+            "Awais: Khadijah, my heart, I’ve fought through all obstacles for you!",
+            "Khadijah: Awais, my brave prince, you’ve crossed worlds for me!",
+            "Awais: Every step, every battle, was for you, my darling. Your smile is my light.",
+            "Khadijah: *tears* Your love makes my heart sing. You’re my forever.",
+            "Awais: I’d face a thousand Mr. Tayyubs just to see you happy, my sweet.",
+            "Khadijah: Oh, Awais, you’re my dream, my joy, my everything!",
+            "Awais: I have a ring, sparkling like your eyes, to promise you my heart.",
+            "Khadijah: *sobbing with joy* I love you, Awais, now and always!"
+          ];
+          dialogueIndex = 0;
+
+          const moveInterval = setInterval(() => {
+            if (khadijah.x > halfwayX && khadijahMoving) {
+              khadijah.x -= khadijah.speed;
+            } else {
+              clearInterval(moveInterval);
+              khadijahMoving = false;
+              inDialoguePhase = true;
+              dialogue = dialogueQueue[dialogueIndex];
+            }
+          }, 1000 / 60);
+        }
+
+        // Update dialogue
+        if (inDialoguePhase && dialogueIndex < dialogueQueue.length) {
+          dialogue = dialogueQueue[dialogueIndex];
+        } else if (inDialoguePhase && dialogueIndex >= dialogueQueue.length && !gameEnded) {
+          gameEnded = true;
+          gameState = 'ended';
+          dialogue = "";
+          endingDiv.style.display = 'block';
+          endingDiv.innerHTML = "My dearest Khadijah, this game is my heart poured out for you. You are my sunshine, my laughter, my home. Your kindness, your beauty, your radiant soul light up my every day. I am yours, forever, my love—may these words wrap you in warmth and bring tears of joy to your beautiful eyes.";
+        }
+
+        if (!awais.alive) dialogue = "Game Over! Awais, time to reboot your princely skills!";
+        else if (awais.level === 1) dialogue = "Mr. Tayyub: Roar! Duck my orb or I’ll make you my lunch!";
+        else if (awais.level === 2 && !showMissAminahPopup) dialogue = "Miss Aminah: I will squash your head with my Jack Daniels bottles!";
+
+        requestAnimationFrame(update);
+      } catch (e) {
+        console.error('Update error:', e.message, e.stack);
+      }
+    }
+
+    update();
+  </script>
